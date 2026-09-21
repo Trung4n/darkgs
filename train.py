@@ -31,7 +31,35 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint: str, debug_from, wandb_cfg=None, light_params="model_parameters.pth", scaling_factor=0.1):
+def train_tensors(gaussians, shader):
+    return {"xyz": gaussians._xyz, "albedo": gaussians._albedo, "normal": gaussians._normal, "opacity": gaussians._opacity,
+            "scaling": gaussians._scaling, "rotation": gaussians._rotation,
+            "shader.ambient_light_log": shader.ambient_light_log, "shader.scaling_factor": shader.scaling_factor}
+
+def step_is_finite(loss, gaussians, shader):
+    """True if the loss, every trainable tensor and every gradient is finite (a single GPU sync)."""
+    ts = [loss.detach()]
+    for p in train_tensors(gaussians, shader).values():
+        ts.append(p.detach())
+        if p.grad is not None:
+            ts.append(p.grad)
+    return bool(torch.stack([torch.isfinite(t).all() for t in ts]).all())
+
+def nonfinite_report(iteration, cam_name, loss, image, gaussians, shader):
+    lines = ["Non-finite value at iteration {} (camera {}): loss = {}, non-finite pixels in the render = {}".format(
+        iteration, cam_name, loss.item(), int((~torch.isfinite(image)).sum()))]
+    for name, p in train_tensors(gaussians, shader).items():
+        for what, t in (("value", p.detach()), ("grad", p.grad)):
+            if t is None:
+                continue
+            fin = t[torch.isfinite(t)]
+            rng = "min {:.3e} max {:.3e}".format(fin.min().item(), fin.max().item()) if fin.numel() else "no finite entry"
+            lines.append("  {:26s} {:5s} non-finite {:>8d} / {:<8d} finite range: {}".format(name, what, int(t.numel() - fin.numel()), t.numel(), rng))
+    lines.append("Only grads non-finite: this iteration's backward pass produced the NaN/inf (parameters are still finite). Values non-finite: an earlier step poisoned them. "
+                 "Re-run with --detect_anomaly to get the PyTorch op that produced it (or --no_check_finite to disable this check).")
+    return "\n".join(lines)
+
+def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint: str, debug_from, wandb_cfg=None, light_params="model_parameters.pth", scaling_factor=0.1, check_finite=True):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset, wandb_cfg)
     wandb_log_interval = wandb_cfg["log_interval"] if wandb_cfg else 10
@@ -130,6 +158,10 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
         loss.backward()
 
         iter_end.record()
+
+        # Stop at the FIRST non-finite loss / parameter / gradient instead of silently training 30k iterations of NaN
+        if check_finite and not step_is_finite(loss, gaussians, shader):
+            raise RuntimeError(nonfinite_report(iteration, viewpoint_cam.image_name, loss, image, gaussians, shader))
 
         with torch.no_grad():
             # Progress bar
@@ -285,7 +317,10 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
         if tb_writer:
             tb_writer.add_histogram("scene/opacity_histogram", scene.gaussians.get_opacity, iteration)
             tb_writer.add_scalar('total_points', scene.gaussians.get_xyz.shape[0], iteration)
-        wandb_log["scene/opacity_histogram"] = wandb.Histogram(scene.gaussians.get_opacity.detach().cpu().numpy().flatten())
+        opacity_values = scene.gaussians.get_opacity.detach().flatten()
+        opacity_values = opacity_values[torch.isfinite(opacity_values)].cpu().numpy()      # wandb.Histogram raises on NaN/inf
+        if opacity_values.size:
+            wandb_log["scene/opacity_histogram"] = wandb.Histogram(opacity_values)
         wandb_log["scene/total_points"] = scene.gaussians.get_xyz.shape[0]
         wandb.log(wandb_log)
         torch.cuda.empty_cache()
@@ -307,6 +342,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--light_params", type=str, default="model_parameters.pth", help="light/shading parameters (state dict + so3) from light calibration")
     parser.add_argument("--scaling_factor", type=float, default=0.1, help="initial scene scale of the shader; 1.0 for poses that are already metric")
+    parser.add_argument("--no_check_finite", action="store_true", default=False, help="do not stop at the first non-finite loss / parameter / gradient")
     parser.add_argument("--use_wandb", action="store_true", default=False)
     parser.add_argument("--wandb_project", type=str, default="DarkGS")
     parser.add_argument("--wandb_name", type=str, default=None)
@@ -329,7 +365,7 @@ if __name__ == "__main__":
         "log_interval": max(1, args.wandb_log_interval),
         "config": vars(args),
     }
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, wandb_cfg, args.light_params, args.scaling_factor)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, wandb_cfg, args.light_params, args.scaling_factor, not args.no_check_finite)
     wandb.finish()
 
     # All done
