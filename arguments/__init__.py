@@ -54,6 +54,7 @@ class ModelParams(ParamGroup):
         self._white_background = False
         self.data_device = "cuda"
         self.eval = False
+        self.linearize = False   # input images are sRGB-encoded (not RAW/linear): convert to linear intensity when loading
         super().__init__(parser, "Loading Parameters", sentinel)
 
     def extract(self, args):

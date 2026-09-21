@@ -13,6 +13,7 @@ from scene.cameras import Camera
 import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
+from utils.image_utils import srgb_to_linear
 
 WARNED = False
 
@@ -41,6 +42,8 @@ def loadCam(args, id, cam_info, resolution_scale):
     resized_image_rgb = PILtoTorch(cam_info.image, resolution)
 
     gt_image = resized_image_rgb[:3, ...]
+    if getattr(args, "linearize", False):
+        gt_image = srgb_to_linear(gt_image)
     loaded_mask = None
 
     if resized_image_rgb.shape[1] == 4:

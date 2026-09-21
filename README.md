@@ -64,6 +64,16 @@ import os
 from kaggle_secrets import UserSecretsClient
 os.environ["WANDB_API_KEY"] = UserSecretsClient().get_secret("WANDB_API_KEY")
 ```
+Train on your own calibrated / simulated data (three optional flags, defaults keep the original behaviour):
+```
+python train.py -s <dataset> --linearize --scaling_factor 1.0 --light_params <dataset>/model_parameters.pth
+```
+- `--linearize`: the input images are sRGB-encoded (e.g. JPEG/PNG renders) instead of linear RAW; they are converted to linear intensity (in float) when loaded.
+- `--scaling_factor`: initial scene scale of the shader (default `0.1`, a hand-picked guess for up-to-scale SfM poses). Use `1.0` when the poses are already metric.
+- `--light_params`: light/shading parameter file (default `model_parameters.pth` in the working directory).
+
+The Replica `office0` re-render (simulated co-located spot light, ground-truth metric poses, `lit` and uniform-light `even` variants) is packaged for this repo by `scripts/darkgs/build_dataset.py` of the Replica simulation project; each package ships its own `model_parameters.pth` and README with the exact command.
+
 Visualize with SIRB viewer:
 ```
 ./SIBR_remoteGaussian_app

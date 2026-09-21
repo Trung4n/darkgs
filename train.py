@@ -19,7 +19,7 @@ from scene import Scene, GaussianModel
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr
+from utils.image_utils import psnr, linear_to_srgb
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 from scene.shading import ShadingModel
@@ -31,7 +31,7 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint: str, debug_from, wandb_cfg=None):
+def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint: str, debug_from, wandb_cfg=None, light_params="model_parameters.pth", scaling_factor=0.1):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset, wandb_cfg)
     wandb_log_interval = wandb_cfg["log_interval"] if wandb_cfg else 10
@@ -40,7 +40,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
     shader = ShadingModel(light = "1DMLP")
     shader = shader.cuda()
 
-    dict = torch.load('model_parameters.pth')
+    dict = torch.load(light_params)
     res = shader.load_state_dict(dict['model_state_dict'])
 
     shader = shader.to("cuda:0")
@@ -50,7 +50,8 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
     print(t_vec)
 
     # An initial (human) guess of scaling factor (by looking at the colmap vizualization).
-    shader.set_scaling_factor(0.1)
+    # SfM poses are only defined up to scale; for poses that are already metric (e.g. simulated data) use --scaling_factor 1.0.
+    shader.set_scaling_factor(scaling_factor)
 
     gaussians.training_setup(opt)
     if checkpoint:
@@ -141,7 +142,7 @@ def training(dataset: ModelParams, opt: OptimizationParams, pipe: PipelineParams
 
             # Log and save
             iter_time = iter_start.elapsed_time(iter_end)
-            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_time, testing_iterations, scene, render, (pipe, background, shader))
+            training_report(tb_writer, iteration, Ll1, loss, l1_loss, iter_time, testing_iterations, scene, render, (pipe, background, shader), dataset.linearize)
             if iteration % wandb_log_interval == 0:
                 wandb.log({
                     "iteration": iteration,
@@ -225,11 +226,14 @@ def prepare_output_and_logger(args, wandb_cfg=None):
     wandb.define_metric("scene/*", step_metric="iteration")
     return tb_writer
 
-def to_wandb_image(image, caption):
-    # Keep raw intensities (wandb's own tensor path min-max normalizes, which distorts dark renders)
+def to_wandb_image(image, caption, srgb_display=False):
+    # Keep raw intensities (wandb's own tensor path min-max normalizes, which distorts dark renders).
+    # With --linearize the tensors are linear intensities: re-apply the sRGB curve so the logged images look like the inputs.
+    if srgb_display:
+        image = linear_to_srgb(image)
     return wandb.Image((image.clamp(0.0, 1.0) * 255).byte().permute(1, 2, 0).cpu().numpy(), caption=caption)
 
-def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs):
+def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : Scene, renderFunc, renderArgs, srgb_display=False):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/l1_loss', Ll1.item(), iteration)
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
@@ -255,9 +259,9 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                         if iteration == testing_iterations[0]:
                             tb_writer.add_images(config['name'] + "_view_{}/ground_truth".format(viewpoint.image_name), gt_image[None], global_step=iteration)
                     if idx < 5:
-                        wandb_renders.append(to_wandb_image(image, viewpoint.image_name))
+                        wandb_renders.append(to_wandb_image(image, viewpoint.image_name, srgb_display))
                         if iteration == testing_iterations[0]:
-                            wandb_gts.append(to_wandb_image(gt_image, viewpoint.image_name))
+                            wandb_gts.append(to_wandb_image(gt_image, viewpoint.image_name, srgb_display))
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
                 psnr_test /= len(config['cameras'])
@@ -295,6 +299,8 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[30_000])
     parser.add_argument("--start_checkpoint", type=str, default = None)
+    parser.add_argument("--light_params", type=str, default="model_parameters.pth", help="light/shading parameters (state dict + so3) from light calibration")
+    parser.add_argument("--scaling_factor", type=float, default=0.1, help="initial scene scale of the shader; 1.0 for poses that are already metric")
     parser.add_argument("--use_wandb", action="store_true", default=False)
     parser.add_argument("--wandb_project", type=str, default="DarkGS")
     parser.add_argument("--wandb_name", type=str, default=None)
@@ -317,7 +323,7 @@ if __name__ == "__main__":
         "log_interval": max(1, args.wandb_log_interval),
         "config": vars(args),
     }
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, wandb_cfg)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, wandb_cfg, args.light_params, args.scaling_factor)
     wandb.finish()
 
     # All done
