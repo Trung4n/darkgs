@@ -43,7 +43,8 @@ def step_is_finite(loss, gaussians, shader):
         ts.append(p.detach())
         if p.grad is not None:
             ts.append(p.grad)
-    return bool(torch.stack([torch.isfinite(t).all() for t in ts]).all())
+    # shader.scaling_factor lives on the CPU (set_scaling_factor builds a new CPU parameter), everything else on the GPU
+    return bool(torch.stack([torch.isfinite(t).all().to(loss.device) for t in ts]).all())
 
 def nonfinite_report(iteration, cam_name, loss, image, gaussians, shader):
     lines = ["Non-finite value at iteration {} (camera {}): loss = {}, non-finite pixels in the render = {}".format(
