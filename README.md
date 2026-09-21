@@ -53,6 +53,17 @@ Train
 ```
 python train.py -s <path to example dataset>
 ```
+Train with [Weights & Biases](https://wandb.ai) logging (off by default, same behaviour as MonoGS: when the flag is absent the run is created with `mode="disabled"`)
+```
+python train.py -s <path to example dataset> --use_wandb
+```
+Optional flags: `--wandb_project` (default `DarkGS`), `--wandb_name`, `--wandb_log_interval` (default `10` iterations).\
+On Kaggle/Colab (no interactive login) provide your API key through the environment before training, e.g. with Kaggle Secrets:
+```python
+import os
+from kaggle_secrets import UserSecretsClient
+os.environ["WANDB_API_KEY"] = UserSecretsClient().get_secret("WANDB_API_KEY")
+```
 Visualize with SIRB viewer:
 ```
 ./SIBR_remoteGaussian_app
