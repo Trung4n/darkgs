@@ -127,6 +127,11 @@ class GaussianModel:
         fused_normal = torch.tensor(np.asarray(pcd.normals)).float().cuda()
 
         print("Number of points at initialisation : ", fused_point_cloud.shape[0])
+        if not fused_normal.abs().max() > 0:
+            # cos = relu(n . light_dir) has zero gradient at n = 0: with all-zero normals every Gaussian keeps colour 0, receives no gradient
+            # (no learning, no densification) and the render stays black. points3D.ply must carry non-zero normals (pointing away from the cameras).
+            print("[WARNING] all initial point normals are zero: the shading model cannot start (zero colour and zero gradient for every Gaussian). "
+                  "Provide points3D.ply with non-zero normals pointing away from the cameras.")
 
         dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd.points)).float().cuda()), 0.0000001)
         scales = torch.log(torch.sqrt(dist2))[...,None].repeat(1, 3)

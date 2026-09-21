@@ -72,6 +72,8 @@ python train.py -s <dataset> --linearize --scaling_factor 1.0 --light_params <da
 - `--scaling_factor`: initial scene scale of the shader (default `0.1`, a hand-picked guess for up-to-scale SfM poses). Use `1.0` when the poses are already metric.
 - `--light_params`: light/shading parameter file (default `model_parameters.pth` in the working directory).
 
+`points3D.ply` must carry **non-zero normals pointing away from the cameras** (`nx, ny, nz`): the shading uses `relu(n · (point − light))`, whose gradient is zero at `n = 0`, so all-zero normals give a permanently black render and no learning at all (`create_from_pcd` prints a warning in that case). With `--linearize` the evaluation also logs `eval_*/psnr_srgb` (PSNR of the sRGB-encoded images), the number to compare with methods evaluated on the input images.
+
 The Replica `office0` re-render (simulated co-located spot light, ground-truth metric poses, `lit` and uniform-light `even` variants) is packaged for this repo by `scripts/darkgs/build_dataset.py` of the Replica simulation project; each package ships its own `model_parameters.pth` and README with the exact command.
 
 Visualize with SIRB viewer:

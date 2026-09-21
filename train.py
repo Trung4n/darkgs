@@ -250,6 +250,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
+                psnr_srgb_test = 0.0
                 wandb_renders, wandb_gts = [], []
                 for idx, viewpoint in enumerate(config['cameras']):
                     image = torch.clamp(renderFunc(viewpoint, scene.gaussians, *renderArgs)["render"], 0.0, 1.0)
@@ -264,7 +265,10 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                             wandb_gts.append(to_wandb_image(gt_image, viewpoint.image_name, srgb_display))
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
+                    if srgb_display:    # --linearize: PSNR above is on linear intensities; also report it in sRGB, comparable with methods evaluated on the input images
+                        psnr_srgb_test += psnr(linear_to_srgb(image), linear_to_srgb(gt_image)).mean().double()
                 psnr_test /= len(config['cameras'])
+                psnr_srgb_test /= len(config['cameras'])
                 l1_test /= len(config['cameras'])          
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer:
@@ -272,6 +276,8 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - psnr', psnr_test, iteration)
                 wandb_log["eval_{}/l1_loss".format(config['name'])] = l1_test.item()
                 wandb_log["eval_{}/psnr".format(config['name'])] = psnr_test.item()
+                if srgb_display:
+                    wandb_log["eval_{}/psnr_srgb".format(config['name'])] = psnr_srgb_test.item()
                 wandb_log["eval_{}/render".format(config['name'])] = wandb_renders
                 if wandb_gts:
                     wandb_log["eval_{}/ground_truth".format(config['name'])] = wandb_gts
