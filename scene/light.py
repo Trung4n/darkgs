@@ -5,6 +5,16 @@ import torch.nn as nn
 from torch import Tensor
 from lietorch import SO3, LieGroupParameter
 
+def normalize_by_depth(x_in_l: Tensor, z_min: float = 1e-3) -> Tensor:
+    """(x, y, z) -> (x/z, y/z, .) for points in the light's coordinate system.
+
+    The shader is evaluated for EVERY Gaussian, also those behind / on the plane of the camera that are culled by the rasterizer. For z == 0 the division gives
+    inf/NaN, the colour of that Gaussian becomes NaN and, although it is never drawn, its (zero) upstream gradient times a NaN local derivative is NaN in the backward pass:
+    it poisons the gradients of the Gaussian and of the shared shader parameters (scaling_factor). Points with |z| < z_min are never lit / visible, so they are clamped."""
+    z = x_in_l[..., 2, None]
+    z = torch.where(z.abs() < z_min, torch.full_like(z, z_min), z)
+    return x_in_l / z
+
 class LightBaseLie(nn.Module):
     name = "Light Base"
     def __init__(self, t_x: float = -0.2266, t_y: float = -0.0022, t_z: float = 0.0761, r_x: float = -0.0027, r_y: float = 0.36, r_z: float = -0.027) -> None:
@@ -119,9 +129,9 @@ class LightMLP1D(LightMLPBase):
             Args:
                 x_in_l: 3D point in the light's coordinate system
         '''
-        x_in_l = x_in_l/x_in_l[..., 2, None]
+        x_in_l = normalize_by_depth(x_in_l)
         x_y = (torch.square(x_in_l[..., 0])+torch.square(x_in_l[..., 1])).to(torch.float32)[..., None]
-        x_y = torch.sqrt(x_y)
+        x_y = torch.sqrt(x_y + 1e-12)      # eps: d sqrt(x)/dx is inf at 0, and 0 * inf = NaN for a Gaussian exactly on the light axis
         # x_y = x_y*2
         
         
@@ -154,7 +164,7 @@ class LightMLP2D(LightMLPBase):
             Args:
                 x_in_l: 3D point in the light's coordinate system
         '''
-        x_in_l = x_in_l/x_in_l[..., 2, None]
+        x_in_l = normalize_by_depth(x_in_l)
         x_y = torch.abs((x_in_l[..., 0:2])).to(torch.float32)
         xy1 = torch.cos(x_y)
         xy2 = torch.cos(2*x_y)
@@ -206,7 +216,7 @@ class Light2DGaussian(LightBaseLie):
             Args:
                 x_in_l: 3D point in the light's coordinate system
         '''
-        x_in_l = x_in_l/x_in_l[..., 2, None]
+        x_in_l = normalize_by_depth(x_in_l)
         x = torch.arctan(torch.abs(x_in_l[..., 0]))
         y = torch.arctan(torch.abs(x_in_l[..., 1]))
         i_gaussian2d = torch.exp(-(x*self.sigma[0])**2-(y*self.sigma[1])**2)
@@ -241,8 +251,8 @@ class Light1DGaussian(LightBaseLie):
             Args:
                 x_in_l: 3D point in the light's coordinate system
         '''
-        x_in_l = x_in_l/x_in_l[..., 2, None]
-        x = torch.arctan(torch.sqrt(x_in_l[..., 0]**2+x_in_l[..., 1]**2))
+        x_in_l = normalize_by_depth(x_in_l)
+        x = torch.arctan(torch.sqrt(x_in_l[..., 0]**2+x_in_l[..., 1]**2 + 1e-12))
         i_gaussian1d = torch.exp(-(x*self.sigma)**2)
         return i_gaussian1d
     
